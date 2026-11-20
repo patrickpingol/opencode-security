@@ -6,7 +6,7 @@ This plugin is a security tool, so it is held to the standard it applies to othe
 
 Report security issues **privately** through Anthropic's responsible disclosure program. See <https://www.anthropic.com/responsible-disclosure-policy> for the current reporting channel and safe-harbor terms.
 
-Do **not** open a public GitHub issue for a security report. Include what you can of: the plugin version from `.opencode-plugin/plugin.json`, your platform and OpenCode version, reproduction steps, and the impact you believe it has.
+Do **not** open a public GitHub issue for a security report. Include what you can of: the plugin version from `package.json`, your platform and OpenCode version, reproduction steps, and the impact you believe it has.
 
 In scope: a vulnerability in the plugin's own code — its scripts, workflow, skills, agent definitions, and hooks.
 

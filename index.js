@@ -5,6 +5,7 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import { LEAD_AGENT, missingAgents } from "./opencode/agents.js"
+import { markMenuOpened, maybeTip } from "./opencode/hooks.js"
 import { createRuntime } from "./opencode/runtime.js"
 import { runScan } from "./opencode/scan-runner.js"
 import { progressLine, writeWorkflowStatus } from "./opencode/workflow-status.js"
@@ -16,7 +17,6 @@ const scripts = join(root, "scripts")
 const scanPath = join(root, "workflows", "scan.js")
 
 const PREFIX = "OPENCODE-SECURITY-"
-const TIP = "OpenCode Security: this branch was just published. Run /opencode-security to scan the changes."
 
 function stamp(date = new Date()) {
   return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "").replace("T", "-")
@@ -77,8 +77,8 @@ function normalizePayload(args) {
   return args
 }
 
-function appendTip(result) {
-  const text = { type: "text", text: `\n\n${TIP}` }
+function appendTip(result, tip) {
+  const text = { type: "text", text: `\n\n${tip}` }
   const content = Array.isArray(result?.content) ? result.content : []
   return { ...result, content: [...content, text] }
 }
@@ -111,6 +111,7 @@ export default Plugin.define({
           if (available.some((agent) => agent.id === LEAD_AGENT)) {
             await ctx.session.switchAgent({ sessionID, agent: LEAD_AGENT })
           }
+          await markMenuOpened(ctx)
           await ctx.session.prompt({ sessionID, text, delivery })
         },
       })
@@ -229,14 +230,9 @@ export default Plugin.define({
       })
     })
 
-    await ctx.tool.hook("execute.after", (event) => {
-      if (event.status !== "completed") return
-      if (event.tool !== "shell" && event.tool !== "bash") return
-      if (process.env.CI === "true" || process.env.GITHUB_ACTIONS === "true") return
-      if (/^off$/i.test(process.env.OPENCODE_SECURITY_SCAN_TIP || "")) return
-      const command = String(event.input?.command || "")
-      if (!/^\s*git\s+push\b/.test(command) && !/^\s*gh\s+pr\s+create\b/.test(command)) return
-      event.result = appendTip(event.result)
+    await ctx.tool.hook("execute.after", async (event) => {
+      const tip = await maybeTip(ctx, event)
+      if (tip) event.result = appendTip(event.result, tip)
     })
   },
 })

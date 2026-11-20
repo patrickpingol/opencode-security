@@ -39,9 +39,9 @@ def is_revision_stamp(path: Path) -> bool:
 
 
 def version() -> str | None:
-    """The non-blank version string in the plugin's manifest, or None when there is not one."""
+    """The non-blank version string in the package manifest, or None when there is not one."""
     try:
-        manifest = strictjson.load(ROOT / ".opencode-plugin" / "plugin.json")
+        manifest = strictjson.load(ROOT / "package.json")
     except (OSError, ValueError):
         return None
     if not is_map(manifest):

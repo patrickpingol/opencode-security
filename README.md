@@ -34,7 +34,7 @@ This directory is the plugin. `opencode.json` here points OpenCode at it, so sta
 
 OpenCode watches its config directory, so saving the config or running `/reload` is enough. In a session, run `/opencode-security`. You can also switch to the `opencode-security` agent.
 
-`OPENCODE_SECURITY_CONCURRENCY` caps how many specialist sessions run at once (default 6). `OPENCODE_SECURITY_SCAN_TIP=off` stops the hint after `git push` or `gh pr create`. This port does not send Anthropic telemetry.
+`OPENCODE_SECURITY_CONCURRENCY` caps how many specialist sessions run at once (default 6). `OPENCODE_SECURITY_SCAN_TIP=off` stops the hint after `git push` or `gh pr create`; `=always` tips on every new commit instead of once per branch, at most five times. This port sends no telemetry.
 
 ## What changed in this port
 
@@ -44,6 +44,8 @@ OpenCode watches its config directory, so saving the config or running `/reload`
 - Each specialist runs in its own child session, created by the plugin with that agent and with the parent session's model, and the plugin polls the session for the JSON result instead of reading it back through a client.
 - Report directories are `OPENCODE-SECURITY-<timestamp>/`.
 - `/workflows` shows the live scan board from the TUI part.
+- The push hint keeps V1's behaviour: it names the branch's base and changed-file count, tips a branch once (per commit with `OPENCODE_SECURITY_SCAN_TIP=always`), stops after five tips or once the menu has been opened, and keeps its state in plugin storage instead of a data-directory file.
+- The scan start confirmation is cancelled after 60 seconds with no answer, as V1 did. That lives in the TUI part, because V2 exposes form cancellation to the terminal UI rather than to server plugins.
 
 The rest of this file describes what a scan does.
 
