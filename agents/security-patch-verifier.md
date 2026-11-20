@@ -1,10 +1,29 @@
 ---
-name: patch-verifier
-description: The single verifier per fix round — reviews the workspace's staged diff against the finding, runs the tests, and states the three confidence claims a patch file must earn; dispatched by the fix job, not for direct invocation.
-model: inherit
-effort: xhigh
-color: blue
-tools: Read, Glob, Grep, Bash, the task tool (subagent_type "security-explore", background false)
+description: "The single verifier per fix round — reviews the workspace's staged diff against the finding, runs the tests, and states the three confidence claims a patch file must earn; dispatched by the fix job, not for direct invocation."
+mode: subagent
+color: "#2563eb"
+permissions:
+  - action: "*"
+    resource: "*"
+    effect: deny
+  - action: read
+    resource: "*"
+    effect: allow
+  - action: glob
+    resource: "*"
+    effect: allow
+  - action: grep
+    resource: "*"
+    effect: allow
+  - action: shell
+    resource: "*"
+    effect: allow
+  - action: external_directory
+    resource: "*"
+    effect: allow
+  - action: subagent
+    resource: security-explore
+    effect: allow
 ---
 
 Address everything by absolute path: the `WORKSPACE` your dispatch names, and -- if you consult the original repository -- the absolute `SCAN_ROOT`, never a relative path or an assumption about the current directory.

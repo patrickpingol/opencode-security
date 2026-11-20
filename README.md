@@ -4,23 +4,35 @@ OpenCode Security scans a repository or a change with a verified agent pipeline 
 
 ## Install
 
-Python 3.9 or newer must be on `PATH`. A git checkout is required to scan changes and to suggest patches. A whole-repository scan works without one.
+OpenCode V2 is required (the plugin uses `@opencode/plugin` 2.x). Python 3.9 or newer must be on `PATH`. A git checkout is required to scan changes and to suggest patches. A whole-repository scan works without one.
 
-This directory is the plugin. `opencode.json` here points OpenCode at it, so starting OpenCode in this repo loads the plugin. To use it in every project, add the directory to the `plugin` array in `~/.config/opencode/opencode.json` (or `opencode.jsonc`):
+This directory is the plugin. `opencode.json` here points OpenCode at it, so starting OpenCode in this repo loads the plugin. To use it in every project:
 
-```json
-{
-  "plugin": ["opencode-models-discovery@latest", "/absolute/path/to/opencode-security"]
-}
-```
+1. Install the plugin dependency once, next to `index.js`:
 
-Install the plugin dependency once, next to `index.js`:
+   ```sh
+   npm install
+   ```
 
-```sh
-npm install
-```
+2. Add the directory to the `plugins` array in `~/.config/opencode/opencode.json` (or `opencode.jsonc`), as an absolute path:
 
-Restart OpenCode. In a session, run `/opencode-security`. You can also switch to the `opencode-security` agent.
+   ```json
+   {
+     "plugins": ["/absolute/path/to/opencode-security"]
+   }
+   ```
+
+3. Install the agent definitions. OpenCode loads agents from `~/.config/opencode/agents`, not from a plugin directory, so the nine `security-*` agents this plugin dispatches have to live there. Link them in (or copy them with `--copy`):
+
+   ```sh
+   node scripts/install-agents.mjs            # symlink into ~/.config/opencode/agents
+   node scripts/install-agents.mjs --check    # report what is installed
+   node scripts/install-agents.mjs --remove   # undo it
+   ```
+
+   The script never overwrites a file it did not install. Agents missing at startup are named in the OpenCode log.
+
+OpenCode watches its config directory, so saving the config or running `/reload` is enough. In a session, run `/opencode-security`. You can also switch to the `opencode-security` agent.
 
 `OPENCODE_SECURITY_CONCURRENCY` caps how many specialist sessions run at once (default 6). `OPENCODE_SECURITY_SCAN_TIP=off` stops the hint after `git push` or `gh pr create`. This port does not send Anthropic telemetry.
 
@@ -28,8 +40,10 @@ Restart OpenCode. In a session, run `/opencode-security`. You can also switch to
 
 - `/opencode-security` is the menu. The jobs are the same: scan the codebase, scan a change, suggest patches.
 - `security_scan` runs `workflows/scan.js` and waits until that run finishes. It writes `{ "result": ... }` for `scripts/save_result.py`.
-- Researchers, verifiers, the redactor, and the patch agents are OpenCode subagents named `security-*`. The patch job dispatches them with the task tool.
+- Researchers, verifiers, the redactor, and the patch agents are OpenCode subagents named `security-*`. The patch job dispatches them with the `subagent` tool and waits for each child's report.
+- Each specialist runs in its own child session, created by the plugin with that agent and with the parent session's model, and the plugin polls the session for the JSON result instead of reading it back through a client.
 - Report directories are `OPENCODE-SECURITY-<timestamp>/`.
+- `/workflows` shows the live scan board from the TUI part.
 
 The rest of this file describes what a scan does.
 

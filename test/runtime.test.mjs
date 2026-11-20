@@ -7,8 +7,7 @@ import { promisify } from "node:util"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
 import { parseJsonObject } from "../opencode/json-result.js"
-import { loadAgentConfigs } from "../opencode/agents.js"
-import { modelFromMessages } from "../opencode/runtime.js"
+import { SECURITY_AGENTS, missingAgents } from "../opencode/agents.js"
 import { notePanel, panelClaim } from "../opencode/panel-findings.js"
 import { summarizeSession } from "../opencode/session-activity.js"
 import { createRuntime } from "../opencode/runtime.js"
@@ -197,84 +196,84 @@ test("workflow board shows phase progress and what each agent is doing", () => {
 test("session activity keeps the model, tokens, and recent tool calls", () => {
   const snap = summarizeSession([
     {
-      info: {
-        role: "assistant",
-        providerID: "beast",
-        modelID: "big",
-        tokens: { input: 80000, output: 800, reasoning: 0, cache: { read: 0, write: 0 } },
-      },
-      parts: [
-        { type: "tool", tool: "bash", state: { status: "completed", input: { command: "grep -n pin core/request_pin.py" } } },
+      type: "assistant",
+      model: { id: "big", providerID: "beast" },
+      tokens: { input: 80000, output: 800, reasoning: 0, cache: { read: 0, write: 0 } },
+      content: [
+        { type: "tool", id: "c1", name: "shell", state: { status: "completed", input: { command: "grep -n pin core/request_pin.py" } } },
         { type: "text", text: "looking" },
       ],
     },
     {
       type: "assistant",
-      model: { providerID: "beast", modelID: "big" },
+      model: { id: "big", providerID: "beast" },
       tokens: { input: 1000, output: 200, reasoning: 0, cache: { read: 0, write: 0 } },
-      content: [{ type: "tool", name: "read", state: { status: "running", title: "core/request_pin.py" } }],
+      content: [{ type: "tool", id: "c2", name: "read", state: { status: "running", input: { filePath: "core/request_pin.py" } } }],
     },
   ])
   assert.equal(snap.model, "beast/big")
   assert.equal(snap.tokens, 82000)
   assert.equal(snap.toolCount, 2)
-  assert.deepEqual(snap.activity, ["Bash(grep -n pin core/request_pin.py)", "Read(core/request_pin.py)"])
+  assert.deepEqual(snap.activity, ["Shell(grep -n pin core/request_pin.py)", "Read(core/request_pin.py)"])
 })
 
 test("a running specialist publishes its phase, prompt, and live tool use", async () => {
-  let release
-  const gate = new Promise((resolve) => {
-    release = resolve
-  })
+  let done = false
   const seen = []
-  const client = {
-    session: {
-      async create() {
-        return { data: { id: "ses_child" } }
-      },
-      async messages() {
-        return {
-          data: [
+  const created = []
+  const prompted = []
+  const rows = () =>
+    prompted.length === 0
+      ? []
+      : [
+    { id: "msg_user", type: "user", text: "Hunt for vulnerabilities in one component." },
+    {
+      id: "msg_assistant",
+      type: "assistant",
+      agent: "security-researcher",
+      model: { id: "big", providerID: "beast" },
+      tokens: { input: 170000, output: 6800, reasoning: 0, cache: { read: 0, write: 0 } },
+      finish: done ? "stop" : "tool-calls",
+      ...(done ? { time: { created: 1, completed: 2 } } : {}),
+      content: done
+        ? [{ type: "text", text: '{"findings":[]}' }]
+        : [
             {
-              info: {
-                role: "assistant",
-                providerID: "beast",
-                modelID: "big",
-                tokens: { input: 170000, output: 6800, reasoning: 0, cache: { read: 0, write: 0 } },
-              },
-              parts: [
-                {
-                  type: "tool",
-                  tool: "bash",
-                  state: { status: "running", input: { command: "grep -n pin core/request_pin.py" } },
-                },
-              ],
+              type: "tool",
+              id: "call_1",
+              name: "bash",
+              state: { status: "running", input: { command: "grep -n pin core/request_pin.py" } },
             },
           ],
-        }
+    },
+      ]
+  const ctx = {
+    session: {
+      async create(input) {
+        created.push(input)
+        return { id: "ses_child" }
       },
-      async prompt() {
-        await gate
-        return {
-          data: {
-            info: {
-              role: "assistant",
-              providerID: "beast",
-              modelID: "big",
-              tokens: { input: 10, output: 5, reasoning: 0, cache: { read: 0, write: 0 } },
-            },
-            parts: [{ type: "text", text: '{"findings":[]}' }],
-          },
-        }
+      async get({ sessionID }) {
+        const busy = done ? { created: 1, updated: 3, busy: 1, idle: 3 } : { created: 1, updated: 3, busy: 3, idle: 0 }
+        return sessionID === "ses_parent"
+          ? { id: "ses_parent", model: { id: "big", providerID: "beast" }, time: busy }
+          : { id: sessionID, time: busy }
       },
-      async abort() {},
+      async context() {
+        return rows()
+      },
+      async prompt(input) {
+        prompted.push(input)
+        return {}
+      },
+      async interrupt() {},
     },
   }
   const runtime = createRuntime({
-    client,
-    directory: "/repo",
+    ctx,
+    parentSessionID: "ses_parent",
     concurrency: 1,
-    pollMs: 250,
+    pollMs: 50,
     onProgress(event) {
       seen.push(event)
     },
@@ -284,40 +283,32 @@ test("a running specialist publishes its phase, prompt, and live tool use", asyn
     phase: "Research",
     agentType: "security-researcher",
   })
-  try {
-    const start = Date.now()
-    let live
-    while (Date.now() - start < 2000) {
-      live = [...seen].reverse().find((event) => event.tasks?.some((task) => task.activity?.length))
-      if (live) break
-      await new Promise((resolve) => setTimeout(resolve, 20))
-    }
-    if (!live) throw new Error("specialist activity was not published")
-    const task = live.tasks.find((item) => item.label === "research:api:injection")
-    assert.equal(task.phase, "Research")
-    assert.equal(task.status, "running")
-    assert.match(task.prompt, /Hunt for vulnerabilities/)
-    assert.equal(task.model, "beast/big")
-    assert.equal(task.tokens, 176800)
-    assert.match(task.activity.at(-1), /grep -n pin/)
-  } finally {
-    release()
+  const start = Date.now()
+  let live
+  while (Date.now() - start < 4000) {
+    live = [...seen].reverse().find((event) => event.tasks?.some((task) => task.activity?.length))
+    if (live) break
+    await new Promise((resolve) => setTimeout(resolve, 20))
   }
+  if (!live) throw new Error("specialist activity was not published")
+  const task = live.tasks.find((item) => item.label === "research:api:injection")
+  assert.equal(task.phase, "Research")
+  assert.equal(task.status, "running")
+  assert.match(task.prompt, /Hunt for vulnerabilities/)
+  assert.equal(task.model, "beast/big")
+  assert.equal(task.tokens, 176800)
+  assert.match(task.activity.at(-1), /grep -n pin/)
+  assert.equal(created[0].agent, "security-researcher")
+  assert.deepEqual(created[0].model, { providerID: "beast", id: "big" })
+  assert.match(prompted[0].text, /Hunt for vulnerabilities/)
+  assert.match(prompted[0].text, /Reply with the result and nothing else/)
+  done = true
   const parsed = await pending
   assert.deepEqual(parsed, { findings: [] })
-  const done = seen.at(-1).tasks.find((item) => item.label === "research:api:injection")
-  assert.equal(done.status, "returned")
-  assert.equal(done.outcome, "no findings")
-  assert.match(done.activity.at(-1), /grep -n pin/)
-})
-
-test("modelFromMessages keeps a slashed model id intact", () => {
-  const model = modelFromMessages([
-    { info: { role: "assistant", providerID: "openrouter", modelID: "old" } },
-    { info: { role: "user", model: { providerID: "beast", modelID: "beast/big" } } },
-  ])
-  assert.deepEqual(model, { providerID: "beast", modelID: "beast/big" })
-  assert.equal(modelFromMessages([]), undefined)
+  const finished = seen.at(-1).tasks.find((item) => item.label === "research:api:injection")
+  assert.equal(finished.status, "returned")
+  assert.equal(finished.outcome, "no findings")
+  assert.match(finished.activity.at(-1), /grep -n pin/)
 })
 
 test("parseJsonObject accepts a fenced object", () => {
@@ -325,14 +316,11 @@ test("parseJsonObject accepts a fenced object", () => {
   assert.equal(parseJsonObject("no object here"), null)
 })
 
-test("agent prompts are registered under OpenCode names", async () => {
-  const agents = await loadAgentConfigs(root)
-  assert.equal(agents["opencode-security"].mode, "primary")
-  assert.equal(agents["security-researcher"].mode, "subagent")
-  assert.equal(agents["security-loader"].permission.bash, "deny")
-  assert.equal(agents["security-researcher"].permission.edit, "deny")
-  assert.match(agents["security-researcher"].prompt, /security-explore/)
-  assert.match(agents["opencode-security"].prompt, /security_scan/)
+test("agent definitions are checked against the loaded agents", () => {
+  const missing = missingAgents([{ id: "opencode-security" }, { id: "security-researcher" }])
+  assert.equal(missing.includes("security-researcher"), false)
+  assert.equal(missing.includes("security-explore"), true)
+  assert.deepEqual(missingAgents(SECURITY_AGENTS.map((id) => ({ id }))), [])
 })
 
 test("scan.js refuses a bare invocation without dispatching", async () => {

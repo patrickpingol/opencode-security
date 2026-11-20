@@ -1,14 +1,51 @@
 import { createSignal, onCleanup, onMount } from "solid-js"
 import { projectWorkflowDir, readWorkflowStatuses } from "./opencode/workflow-status.js"
-import { clampWorkflowNav, initialWorkflowNav, readWorkflowModel, reduceWorkflowNav, workflowColumns } from "./opencode/workflow-nav.js"
+import {
+  clampWorkflowNav,
+  initialWorkflowNav,
+  readWorkflowModel,
+  reduceWorkflowNav,
+  workflowColumns,
+} from "./opencode/workflow-nav.js"
 
 const VISIBLE = 14
 
-function themeOf(api) {
-  try {
-    return api.theme?.current || {}
-  } catch {
-    return {}
+const FALLBACK = {
+  text: "white",
+  muted: "gray",
+  accent: "#c45c26",
+  success: "green",
+  error: "red",
+  warning: "yellow",
+  border: "gray",
+  borderActive: "white",
+  borderSubtle: "gray",
+  selectedText: "black",
+}
+
+function token(theme, ...names) {
+  for (const name of names) {
+    let value = theme
+    for (const part of name.split(".")) value = value?.[part]
+    if (typeof value === "string") return value
+  }
+  return undefined
+}
+
+// OpenCode has shipped theme tokens both flat and nested; read either shape.
+export function themeOf(context) {
+  const theme = context?.theme || {}
+  return {
+    text: token(theme, "text", "text.base") || FALLBACK.text,
+    muted: token(theme, "textMuted", "text.muted", "text.subtle") || FALLBACK.muted,
+    accent: token(theme, "accent", "background.accent") || FALLBACK.accent,
+    success: token(theme, "success", "text.success") || FALLBACK.success,
+    error: token(theme, "error", "text.error") || FALLBACK.error,
+    warning: token(theme, "warning", "text.warning") || FALLBACK.warning,
+    border: token(theme, "border", "border.base") || FALLBACK.border,
+    borderActive: token(theme, "borderActive", "border.active", "accent") || FALLBACK.borderActive,
+    borderSubtle: token(theme, "borderSubtle", "border.subtle", "border") || FALLBACK.borderSubtle,
+    selectedText: token(theme, "selectedListItemText", "text.onAccent", "background") || FALLBACK.selectedText,
   }
 }
 
@@ -21,17 +58,17 @@ function windowRows(rows) {
 }
 
 function markColor(mark, theme, selected) {
-  if (selected) return theme.selectedListItemText || theme.background || "black"
-  if (mark === "✓") return theme.success || "green"
-  if (mark === "✗") return theme.error || "red"
-  if (mark === "●") return theme.warning || theme.accent || "yellow"
-  return theme.textMuted || "gray"
+  if (selected) return theme.selectedText
+  if (mark === "✓") return theme.success
+  if (mark === "✗") return theme.error
+  if (mark === "●") return theme.warning
+  return theme.muted
 }
 
 function Row(props) {
-  const theme = () => props.theme || {}
+  const theme = () => props.theme || FALLBACK
   const selected = () => Boolean(props.selected)
-  const fg = () => (selected() ? theme().selectedListItemText || theme().background || "black" : theme().text || "white")
+  const fg = () => (selected() ? theme().selectedText : theme().text)
   return (
     <box
       width="100%"
@@ -39,10 +76,10 @@ function Row(props) {
       flexShrink={0}
       paddingLeft={1}
       paddingRight={1}
-      {...(selected() ? { backgroundColor: theme().accent || "#c45c26" } : {})}
+      {...(selected() ? { backgroundColor: theme().accent } : {})}
     >
       {props.header ? (
-        <text fg={theme().textMuted || "gray"} wrapMode="none">{props.header}</text>
+        <text fg={theme().muted} wrapMode="none">{props.header}</text>
       ) : null}
       <box width="100%" flexDirection="row" gap={1}>
         {props.mark ? <text fg={markColor(props.mark, theme(), selected())} wrapMode="none">{props.mark}</text> : null}
@@ -50,29 +87,29 @@ function Row(props) {
         {props.aside ? <text fg={fg()} wrapMode="none">{props.aside}</text> : null}
       </box>
       {props.secondary ? (
-        <text fg={selected() ? fg() : theme().textMuted || "gray"} wrapMode="none">{`  ${props.secondary}`}</text>
+        <text fg={selected() ? fg() : theme().muted} wrapMode="none">{`  ${props.secondary}`}</text>
       ) : null}
     </box>
   )
 }
 
 function Column(props) {
-  const theme = () => props.theme || {}
+  const theme = () => props.theme || FALLBACK
   const active = () => Boolean(props.active)
   return (
     <box
       flexDirection="column"
       {...(props.width ? { width: props.width, flexGrow: 0 } : { flexGrow: 1 })}
       border
-      borderColor={active() ? theme().borderActive || theme().accent || "white" : theme().borderSubtle || theme().border || "gray"}
+      borderColor={active() ? theme().borderActive : theme().borderSubtle}
       paddingTop={1}
       paddingBottom={1}
     >
-      {props.heading ? <text fg={theme().text || "white"} wrapMode="none">{` ${props.heading}`}</text> : null}
-      {props.sub ? <text fg={theme().textMuted || "gray"} wrapMode="word">{` ${props.sub}`}</text> : null}
+      {props.heading ? <text fg={theme().text} wrapMode="none">{` ${props.heading}`}</text> : null}
+      {props.sub ? <text fg={theme().muted} wrapMode="word">{` ${props.sub}`}</text> : null}
       <box flexDirection="column" flexGrow={1}>
         {(props.rows || []).length === 0 ? (
-          <text fg={theme().textMuted || "gray"}>{props.empty || "  Nothing in this section yet."}</text>
+          <text fg={theme().muted}>{props.empty || "  Nothing in this section yet."}</text>
         ) : (
           windowRows(props.rows).map((row) => <Row theme={theme()} {...row} />)
         )}
@@ -81,60 +118,17 @@ function Column(props) {
   )
 }
 
-function WorkflowBoard(props) {
-  const [model, setModel] = createSignal(props.model)
-  const [nav, setNav] = createSignal(initialWorkflowNav())
-  let seenKey = ""
-  let seenAt = 0
-
-  const applyKey = (key) => {
-    const now = Date.now()
-    if (key === seenKey && now - seenAt < 16) return
-    seenKey = key
-    seenAt = now
-    if (key === "escape") {
-      props.onClose?.()
-      return
-    }
-    if (!["up", "down", "left", "right", "return"].includes(key)) return
-    setNav((current) => reduceWorkflowNav(current, key, model()))
-  }
-
-  onMount(() => {
-    props.api?.ui?.dialog?.setSize?.("xlarge")
-    const timer = setInterval(() => {
-      const next = readWorkflowModel(readWorkflowStatuses(projectWorkflowDir(props.directory)))
-      setModel(next)
-      setNav((current) => clampWorkflowNav(current, next))
-    }, 1000)
-    const stopTimer = () => clearInterval(timer)
-    props.bind?.(applyKey, stopTimer)
-    onCleanup(stopTimer)
-  })
-
-  const onKeyDown = (event) => {
-    const name = event?.name || event?.key || ""
-    const key = name === "enter" ? "return" : name
-    if (!["up", "down", "left", "right", "return", "escape"].includes(key)) return
-    event.preventDefault?.()
-    event.stopPropagation?.()
-    applyKey(key)
-  }
-
-  return <BoardFrame api={props.api} model={model} nav={nav} onKeyDown={onKeyDown} />
-}
-
 function BoardFrame(props) {
-  const theme = () => themeOf(props.api)
-  const view = () => workflowColumns(props.model(), props.nav())
+  const theme = () => props.theme || FALLBACK
+  const view = () => workflowColumns(props.model, props.nav)
   return (
     <box width="100%" flexDirection="column" gap={1} paddingLeft={1} paddingRight={1} paddingBottom={1} focused onKeyDown={props.onKeyDown}>
       <box flexDirection="row" justifyContent="space-between">
-        <text fg={theme().text || "white"} wrapMode="none">{view().title}</text>
-        <text fg={theme().textMuted || "gray"}>esc</text>
+        <text fg={theme().text} wrapMode="none">{view().title}</text>
+        <text fg={theme().muted}>esc</text>
       </box>
       {view().empty ? (
-        <text fg={theme().textMuted || "gray"}>{view().empty}</text>
+        <text fg={theme().muted}>{view().empty}</text>
       ) : (
         <box flexDirection="column" flexGrow={1} gap={1}>
           <box flexDirection="row" flexGrow={1} gap={1}>
@@ -155,66 +149,58 @@ function BoardFrame(props) {
               empty={view().stage === "detail" ? "  No description yet." : "  No agents in this section yet."}
             />
           </box>
-          <text fg={theme().textMuted || "gray"}>{view().hint}</text>
+          <text fg={theme().muted}>{view().hint}</text>
         </box>
       )}
     </box>
   )
 }
 
-export function mountWorkflows(api, directory) {
-  if (!api.ui?.dialog?.replace) return null
-  let stopped = false
-  let handle = (key) => {
-    void key
-  }
-  let halt = () => {}
-  let release = () => {}
-  const stop = () => {
-    if (stopped) return
-    stopped = true
-    halt()
-    release()
-    handle = () => {}
-    api.ui.dialog.clear()
-  }
-  try {
-    if (typeof api.keymap?.registerLayer === "function") {
-      const names = ["up", "down", "left", "right", "return", "escape"]
-      const registered = api.keymap.registerLayer({
-        commands: names.map((key) => ({
-          name: `opencode-security.workflows.nav.${key}`,
-          title: `Workflow ${key}`,
-          hidden: true,
-          run: () => handle(key === "return" ? "return" : key),
-        })),
-        bindings: [
-          ...names.map((key) => ({ key, cmd: `opencode-security.workflows.nav.${key}` })),
-          { key: "enter", cmd: "opencode-security.workflows.nav.return" },
-        ],
-      })
-      if (typeof registered === "function") release = registered
+export function WorkflowsBoard(props) {
+  const read = () => readWorkflowModel(readWorkflowStatuses(projectWorkflowDir(props.directory)))
+  const [model, setModel] = createSignal(read())
+  const [nav, setNav] = createSignal(initialWorkflowNav())
+  let seenKey = ""
+  let seenAt = 0
+
+  const applyKey = (key) => {
+    const now = Date.now()
+    if (key === seenKey && now - seenAt < 16) return
+    seenKey = key
+    seenAt = now
+    if (key === "escape") {
+      props.onClose?.()
+      return
     }
-    const scans = readWorkflowStatuses(projectWorkflowDir(directory))
-    api.ui.dialog.replace(
-      () => (
-        <WorkflowBoard
-          api={api}
-          directory={directory}
-          model={readWorkflowModel(scans)}
-          bind={(fn, stopTimer) => {
-            handle = fn
-            halt = stopTimer || (() => {})
-          }}
-          onClose={stop}
-        />
-      ),
-      stop,
-    )
-    api.ui.dialog.setSize("xlarge")
-  } catch (error) {
-    release()
-    throw error
+    if (!["up", "down", "left", "right", "return"].includes(key)) return
+    setNav((current) => reduceWorkflowNav(current, key, model()))
   }
-  return stop
+
+  onMount(() => {
+    const timer = setInterval(() => {
+      const next = read()
+      setModel(next)
+      setNav((current) => clampWorkflowNav(current, next))
+    }, 1000)
+    onCleanup(() => clearInterval(timer))
+  })
+
+  const onKeyDown = (event) => {
+    const name = event?.name || event?.key || ""
+    const key = name === "enter" ? "return" : name
+    if (!["up", "down", "left", "right", "return", "escape"].includes(key)) return
+    event.preventDefault?.()
+    event.stopPropagation?.()
+    applyKey(key)
+  }
+
+  return <BoardFrame theme={themeOf(props.context)} model={model()} nav={nav()} onKeyDown={onKeyDown} />
+}
+
+export function mountWorkflows(context, directory) {
+  context.ui.dialog.set({ size: "xlarge" })
+  context.ui.dialog.show(
+    () => <WorkflowsBoard context={context} directory={directory} onClose={() => context.ui.dialog.clear()} />,
+    () => {},
+  )
 }

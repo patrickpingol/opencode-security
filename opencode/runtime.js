@@ -1,48 +1,48 @@
-import { AGENT_TYPE_MAP, toolsFor } from "./agents.js"
+import { AGENT_TYPE_MAP } from "./agents.js"
 import { parseJsonObject, textFromMessage } from "./json-result.js"
 import { notePanel } from "./panel-findings.js"
 import { outcomeBody, outcomeSummary, promptExcerpt, summarizeSession } from "./session-activity.js"
 
 const DEFAULT_CONCURRENCY = 6
 const DEFAULT_STALL_MS = 600_000
+const POLL_MS = 750
 
-function unwrap(result) {
-  if (!result) throw new Error("OpenCode returned an empty response")
-  if (result.error) {
-    const error = result.error
-    const message = error.message || error.data?.message || JSON.stringify(error)
-    throw new Error(String(message).slice(0, 500))
-  }
-  return result.data ?? result
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+function messagesOf(listed) {
+  if (Array.isArray(listed)) return listed
+  if (Array.isArray(listed?.data)) return listed.data
+  return []
 }
 
-// OpenCode parses a model string on the first slash. A model id that itself
-// contains a slash, such as beast/big under provider beast, then looks up the
-// wrong key. The parent session already stores the pair separately.
-export function modelFromMessages(rows) {
-  const list = Array.isArray(rows) ? rows : []
-  for (let i = list.length - 1; i >= 0; i--) {
-    const info = list[i]?.info ?? list[i]
-    if (!info || typeof info !== "object") continue
-    const user = info.model
-    if (info.role === "user" && user?.providerID && user?.modelID) {
-      return { providerID: String(user.providerID), modelID: String(user.modelID) }
-    }
-    if (info.role === "assistant" && info.providerID && info.modelID) {
-      return { providerID: String(info.providerID), modelID: String(info.modelID) }
-    }
-  }
-  return undefined
+function assistantMessages(rows, before) {
+  return rows.filter((row) => row?.type === "assistant" && !before.has(row.id))
 }
 
-async function specialistText(client, directory, sessionID, message) {
-  let text = textFromMessage(message)
-  if (text.trim()) return text
-  const listed = unwrap(await client.session.messages({ path: { id: sessionID }, query: { directory } }))
-  const rows = Array.isArray(listed) ? listed : []
+function stillWorking(message) {
+  const content = Array.isArray(message?.content) ? message.content : []
+  return content.some(
+    (part) => part?.type === "tool" && (part.state?.status === "running" || part.state?.status === "streaming"),
+  )
+}
+
+// A round is over when its last assistant message has finished a turn that does
+// not hand off to another tool step, or when the session itself reports idle.
+function roundFinished(rows, before, info) {
+  const messages = assistantMessages(rows, before)
+  if (!messages.length) return false
+  const last = messages[messages.length - 1]
+  if (stillWorking(last)) return false
+  if (last.time?.completed && last.finish && last.finish !== "tool-calls") return true
+  const idle = Number(info?.time?.idle) > 0 && Number(info?.time?.idle) >= Number(info?.time?.busy ?? 0)
+  return idle
+}
+
+function lastAssistantText(rows) {
   for (let i = rows.length - 1; i >= 0; i--) {
-    text = textFromMessage(rows[i])
+    const text = textFromMessage(rows[i])
     if (text.trim()) return text
+    if (rows[i]?.type === "user") return ""
   }
   return ""
 }
@@ -77,9 +77,9 @@ function applySnapshot(task, snap) {
   return changed
 }
 
-export function createRuntime({ client, directory, parentSessionID, signal, onProgress, concurrency, pollMs }) {
+export function createRuntime({ ctx, parentSessionID, signal, onProgress, concurrency, pollMs }) {
   const limit = Math.max(1, Number(concurrency) || DEFAULT_CONCURRENCY)
-  const watchMs = Math.max(250, Number(pollMs) || 2000)
+  const watchMs = Math.max(250, Number(pollMs) || POLL_MS)
   let active = 0
   const waiting = []
   const logs = []
@@ -115,40 +115,16 @@ export function createRuntime({ client, directory, parentSessionID, signal, onPr
     emit("activity", logs.at(-1) || "")
   }
 
-  function watch(sessionID, task) {
-    let stopped = false
-    let pulling = false
-    const pull = async () => {
-      if (stopped || pulling) return
-      pulling = true
-      try {
-        const listed = unwrap(await client.session.messages({ path: { id: sessionID }, query: { directory } }))
-        if (stopped) return
-        if (applySnapshot(task, summarizeSession(listed))) touch()
-      } catch {
-        // The specialist keeps running when a progress read fails.
-      } finally {
-        pulling = false
-      }
-    }
-    const timer = setInterval(pull, watchMs)
-    pull()
-    return () => {
-      stopped = true
-      clearInterval(timer)
-    }
-  }
-
   let modelPromise
   function parentModel() {
     if (!modelPromise) {
       modelPromise = (async () => {
         if (!parentSessionID) return undefined
         try {
-          const listed = unwrap(
-            await client.session.messages({ path: { id: parentSessionID }, query: { directory } }),
-          )
-          return modelFromMessages(listed)
+          const info = await ctx.session.get({ sessionID: parentSessionID })
+          const model = info?.model
+          if (!model?.providerID || !model?.id) return undefined
+          return model.variant ? { providerID: model.providerID, id: model.id, variant: model.variant } : { providerID: model.providerID, id: model.id }
         } catch {
           return undefined
         }
@@ -172,6 +148,18 @@ export function createRuntime({ client, directory, parentSessionID, signal, onPr
     if (next) next()
   }
 
+  async function awaitRound(sessionID, before, task, deadline, stallMs) {
+    for (;;) {
+      if (signal?.aborted) throw new Error(`${task.label}: the scan was aborted`)
+      const rows = messagesOf(await ctx.session.context({ sessionID }).catch(() => []))
+      const info = await ctx.session.get({ sessionID }).catch(() => undefined)
+      if (applySnapshot(task, summarizeSession(rows))) touch()
+      if (roundFinished(rows, before, info)) return rows
+      if (Date.now() >= deadline) throw new Error(`${task.label}: specialist timed out after ${stallMs}ms`)
+      await sleep(watchMs)
+    }
+  }
+
   async function agent(prompt, opts = {}) {
     const requested = opts.agentType || opts.agent || "security-researcher"
     const agentName = AGENT_TYPE_MAP[requested] || requested
@@ -179,7 +167,6 @@ export function createRuntime({ client, directory, parentSessionID, signal, onPr
     const stallMs = Number(opts.stallMs) > 0 ? Number(opts.stallMs) : DEFAULT_STALL_MS
     await acquire()
     let sessionID
-    let stopWatch = () => {}
     const excerpt = promptExcerpt(prompt)
     const task = {
       label,
@@ -204,54 +191,25 @@ export function createRuntime({ client, directory, parentSessionID, signal, onPr
       if (signal?.aborted) throw new Error("the scan was aborted")
       findings = notePanel(findings, label, prompt, null)
       note("agent", `${label}: dispatching ${agentName}`)
-      const created = unwrap(
-        await client.session.create({
-          query: { directory },
-          body: { parentID: parentSessionID, title: String(label).slice(0, 120) },
-        }),
-      )
+      const model = await parentModel()
+      const created = await ctx.session.create({
+        title: String(label).slice(0, 120),
+        agent: agentName,
+        ...(model ? { model } : {}),
+        metadata: { opencodeSecurity: { label, parentSessionID: parentSessionID || null } },
+      })
       sessionID = created.id
       task.sessionID = sessionID
+      if (model?.id) task.model = model.providerID ? `${model.providerID}/${model.id}` : model.id
+      touch()
+      const before = new Set(messagesOf(await ctx.session.context({ sessionID }).catch(() => [])).map((row) => row?.id))
       const schema = opts.schema
         ? `\n\nReply with one JSON object and nothing else. No markdown fence. It must match this JSON Schema:\n${JSON.stringify(opts.schema)}`
         : "\n\nReply with the result and nothing else."
       const effort = opts.effort ? `\nDispatch effort: ${opts.effort}.` : ""
-      const model = await parentModel()
-      if (model?.modelID) task.model = model.providerID ? `${model.providerID}/${model.modelID}` : model.modelID
-      touch()
-      stopWatch = watch(sessionID, task)
-      const prompted = client.session.prompt({
-        path: { id: sessionID },
-        query: { directory },
-        body: {
-          agent: agentName,
-          ...(model ? { model } : {}),
-          tools: opts.tools || toolsFor(agentName),
-          parts: [{ type: "text", text: `${prompt}${effort}${schema}` }],
-        },
-      })
-      let stallTimer
-      const timeout = new Promise((_, reject) => {
-        stallTimer = setTimeout(() => reject(new Error(`${label}: specialist timed out after ${stallMs}ms`)), stallMs)
-        signal?.addEventListener(
-          "abort",
-          () => {
-            clearTimeout(stallTimer)
-            reject(new Error(`${label}: the scan was aborted`))
-          },
-          { once: true },
-        )
-      })
-      let message
-      try {
-        message = unwrap(await Promise.race([prompted, timeout]))
-      } finally {
-        clearTimeout(stallTimer)
-      }
-      stopWatch()
-      stopWatch = () => {}
-      applySnapshot(task, summarizeSession(message))
-      const text = await specialistText(client, directory, sessionID, message)
+      await ctx.session.prompt({ sessionID, text: `${prompt}${effort}${schema}` })
+      const rows = await awaitRound(sessionID, before, task, Date.now() + stallMs, stallMs)
+      const text = lastAssistantText(rows)
       const parsed = parseJsonObject(text)
       if (!parsed) throw new Error(`${label}: specialist returned no JSON object`)
       findings = notePanel(findings, label, prompt, parsed)
@@ -268,11 +226,10 @@ export function createRuntime({ client, directory, parentSessionID, signal, onPr
       task.detail = message.slice(0, 200)
       note("agent", `${label}: ${message}`)
       if (sessionID) {
-        await client.session.abort({ path: { id: sessionID }, query: { directory } }).catch(() => {})
+        await ctx.session.interrupt({ sessionID }).catch(() => {})
       }
       throw error instanceof Error ? error : new Error(message)
     } finally {
-      stopWatch()
       release()
     }
   }

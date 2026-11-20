@@ -25,7 +25,14 @@ export function parseJsonObject(text) {
 }
 
 export function textFromMessage(message) {
-  const parts = message?.parts || message?.info?.parts || []
+  const row = message?.info && typeof message.info === "object" ? message.info : message
+  const parts = Array.isArray(row?.parts)
+    ? row.parts
+    : Array.isArray(row?.content)
+      ? row.content
+      : Array.isArray(message?.parts)
+        ? message.parts
+        : []
   return parts
     .filter((part) => part && part.type === "text" && typeof part.text === "string")
     .map((part) => part.text)

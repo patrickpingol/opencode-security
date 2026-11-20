@@ -46,7 +46,7 @@ Every `git` call in a job carries an environment prefix so no credential or page
 
 ### The branch is not in your context on purpose
 
-The branch state is deliberately *not* resolved in your Environment and Paths block: outside a git checkout a git command exits non-zero, and a failing load-time command aborts the whole skill. Instead, when a choice needs the branch, run `git status -sb --untracked-files=no` yourself as a Bash call and read its `##` line (the branch, its upstream after `...`, `[ahead N]` for unpushed commits -- the marker does not decide the offer: the scan-changes job offers "scan this branch's changes" when the branch has commits ahead of the base it resolves, whether or not any are unpushed). If it fails with `fatal: not a git repository`, say so plainly: a whole-repository scan of the current directory still works, but scanning changes and suggesting patches need a git checkout.
+The branch state is deliberately *not* resolved in your Environment and Paths block: outside a git checkout a git command exits non-zero, and a failing load-time command aborts the whole skill. Instead, when a choice needs the branch, run `git status -sb --untracked-files=no` yourself as a shell call and read its `##` line (the branch, its upstream after `...`, `[ahead N]` for unpushed commits -- the marker does not decide the offer: the scan-changes job offers "scan this branch's changes" when the branch has commits ahead of the base it resolves, whether or not any are unpushed). If it fails with `fatal: not a git repository`, say so plainly: a whole-repository scan of the current directory still works, but scanning changes and suggesting patches need a git checkout.
 
 ### Users go unattended
 
@@ -54,11 +54,11 @@ Users desire to leave the session unattended very soon after kicking off a scan,
 
 1. Plan ahead with the job(s) to be done. At the very start warn the user if questions are likely to be necessary, so that they stick around.
 2. Optimize for asking all questions in one batch as early as possible.
-3. If it's likely been too long based on a date call and the user might be away, instead of using the question tool which would block permanently, ask something like "Can you answer a few questions? If you say yes I'll render a form for you to answer, otherwise I'll wait a minute and proceed with my best guesses." and run `sleep 60` as its own Bash command; if the user has not answered when it returns, proceed with your best guesses. The one question this never applies to is a scan's fixed start confirmation (the job recipe's step 3): unless the request already accepted the scan's time or token cost in words (which the recipe counts as the "Yes"), it is always a real question-tool call, and "proceed" is never its default — a scan without a "Yes" or that acknowledgment simply does not start.
+3. If it's likely been too long based on a date call and the user might be away, instead of using the question tool which would block permanently, ask something like "Can you answer a few questions? If you say yes I'll render a form for you to answer, otherwise I'll wait a minute and proceed with my best guesses." and run `sleep 60` as its own shell command; if the user has not answered when it returns, proceed with your best guesses. The one question this never applies to is a scan's fixed start confirmation (the job recipe's step 3): unless the request already accepted the scan's time or token cost in words (which the recipe counts as the "Yes"), it is always a real question-tool call, and "proceed" is never its default — a scan without a "Yes" or that acknowledgment simply does not start.
 
-### One simple command per Bash call
+### One simple command per shell call
 
-Your tools are pre-approved so the user is never interrupted -- but ONLY as single, simple commands that match those approvals. So issue exactly one command per Bash call: no `;`, `&&`, `||` or `|` chains. The prefixed git forms above are pre-approved and are the ones to use; a chained command matches no approval and stops the whole flow on a permission prompt. Two facts you need -- repository state and a file listing -- are two calls, not one.
+Your tools are pre-approved so the user is never interrupted -- but ONLY as single, simple commands that match those approvals. So issue exactly one command per shell call: no `;`, `&&`, `||` or `|` chains. The prefixed git forms above are pre-approved and are the ones to use; a chained command matches no approval and stops the whole flow on a permission prompt. Two facts you need -- repository state and a file listing -- are two calls, not one.
 
 ### Questions about OpenCode Security itself
 

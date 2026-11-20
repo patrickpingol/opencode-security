@@ -43,7 +43,7 @@ question({
 security_scan({ payload: { scanRoot, runDir, mode, effort } })
 ```
 
-**task** — one specialist. `background` is false. `subagent_type` is one of `security-inventory`, `security-researcher`, `security-verifier`, `security-loader`, `security-redactor`, `security-patch-generator`, `security-patch-verifier`, `security-explore`.
+**subagent** — one specialist. `agent` is one of `security-inventory`, `security-researcher`, `security-verifier`, `security-loader`, `security-redactor`, `security-patch-generator`, `security-patch-verifier`, `security-explore`. A specialist always runs in its own child session and in the background: the call returns at once, and the child's report arrives as a `<subagent>` message. Wait for that report before judging the unit; do not poll the child or read its transcript.
 
 ## The front-desk menu
 

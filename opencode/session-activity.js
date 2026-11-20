@@ -13,7 +13,11 @@ function tokenTotal(tokens) {
 
 function modelName(info) {
   const model = info?.model
-  const id = info?.modelID || model?.modelID || (typeof model === "string" ? model : "")
+  const id =
+    info?.modelID ||
+    model?.modelID ||
+    model?.id ||
+    (typeof model === "string" ? model : "")
   const provider = info?.providerID || model?.providerID || ""
   if (!id) return ""
   if (provider && !String(id).startsWith(`${provider}/`)) return `${provider}/${id}`

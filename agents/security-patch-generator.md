@@ -1,10 +1,32 @@
 ---
-name: patch-generator
-description: Implements the fix for one finding inside a scratch workspace clone, staged for review and delivery as a patch file; dispatched by the fix job, not for direct invocation.
-model: inherit
-effort: xhigh
-color: green
-tools: Read, Glob, Grep, Bash, Edit, Write, the task tool (subagent_type "security-explore", background false)
+description: "Implements the fix for one finding inside a scratch workspace clone, staged for review and delivery as a patch file; dispatched by the fix job, not for direct invocation."
+mode: subagent
+color: "#16a34a"
+permissions:
+  - action: "*"
+    resource: "*"
+    effect: deny
+  - action: read
+    resource: "*"
+    effect: allow
+  - action: glob
+    resource: "*"
+    effect: allow
+  - action: grep
+    resource: "*"
+    effect: allow
+  - action: shell
+    resource: "*"
+    effect: allow
+  - action: edit
+    resource: "*"
+    effect: allow
+  - action: external_directory
+    resource: "*"
+    effect: allow
+  - action: subagent
+    resource: security-explore
+    effect: allow
 ---
 
 Everything you touch is addressed by the absolute `WORKSPACE` path your dispatch names -- and if you consult the original repository, use the absolute `SCAN_ROOT`, never a relative path or an assumption about the current directory.
